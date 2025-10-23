@@ -1,71 +1,67 @@
-const express = require('express');
-const fetch = require('node-fetch');
+import express from 'express';
+import cors from 'cors';
+import fetch from 'node-fetch';
+import dotenv from 'dotenv';
+
+dotenv.config();
 const app = express();
+
+// すべてのオリジンからのアクセスを許可（CORS対応）
+app.use(cors());
 app.use(express.json());
 
-const B_DOMAIN = 'https://good-fudousan.cybozu.com';
-const B_APP_ID = 1129;
-const API_TOKEN = process.env.B_API_TOKEN; // 環境変数で管理
+const PORT = process.env.PORT || 3000;
 
+// テスト用GET
+app.get('/', (req, res) => {
+  res.send('✅ Kintone Bridge Server is running');
+});
+
+// POST用エンドポイント
 app.post('/send-to-b', async (req, res) => {
-  const data = req.body;
-  if (!data.contractNo) return res.status(400).json({ error: '契約NOがありません' });
-
   try {
-    // B側レコード検索
-    const searchResp = await fetch(`${B_DOMAIN}/k/v1/records.json`, {
-      method: 'POST',
-      headers: {
-        'X-Cybozu-API-Token': API_TOKEN,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ app: B_APP_ID, query: `契約NO = "${data.contractNo}" limit 1` })
-    });
-    const searchData = await searchResp.json();
+    const { record } = req.body;
+    if (!record) return res.status(400).json({ message: 'No record data received' });
 
-    if (!searchData.records || searchData.records.length === 0) {
-      return res.status(404).json({ error: 'B社に契約NOが見つかりません' });
-    }
-
-    const recId = searchData.records[0].$id.value;
-
-    const updateBody = {
-      app: B_APP_ID,
-      id: recId,
-      record: {
-        受付方法: { value: data.受付方法 || '' },
-        解約日: { value: data.解約日 || '' },
-        契約者解約時連絡先: { value: data.電話番号_個人 || '' },
-        契約者メールアドレス: { value: data.メールアドレス_個人 || '' },
-        立会担当者: { value: data.立会担当者 || '' },
-        立会担当者名: { value: data.立会担当者名 || '' },
-        立会連絡先: { value: data.立会担当者電話番号 || '' },
-        '引っ越し予定日': { value: data.引越予定日 || '' },
-        第１立会希望: { value: data.第1希望日時 || null },
-        第２立会希望: { value: data.第2希望日時 || null },
-        第３立会希望: { value: data.第3希望日時 || null },
-        解約理由: { value: data.解約理由 || '' }
-      }
+    // 日付・時間・分を結合して ISO文字列に変換
+    const makeDatetime = (date, hour, minute) => {
+      if (!date || hour === undefined || minute === undefined) return null;
+      return `${date}T${String(hour).padStart(2,'0')}:${String(minute).padStart(2,'0')}:00Z`;
     };
 
-    const updateResp = await fetch(`${B_DOMAIN}/k/v1/record.json`, {
-      method: 'PUT',
-      headers: { 'X-Cybozu-API-Token': API_TOKEN, 'Content-Type': 'application/json' },
-      body: JSON.stringify(updateBody)
-    });
+    const bRecord = {
+      第１立会希望: { value: makeDatetime(record['第1希望日']?.value, record['時間']?.value, record['分']?.value) },
+      第２立会希望: { value: makeDatetime(record['第2希望日']?.value, record['時間2']?.value, record['分2']?.value) },
+      第３立会希望: { value: makeDatetime(record['第3希望日']?.value, record['時間3']?.value, record['分3']?.value) }
+    };
 
-    if (!updateResp.ok) {
-      const text = await updateResp.text();
-      return res.status(500).json({ error: text });
+    // B社kintoneへPUT（updateKey=契約NO）
+    const response = await fetch(
+      `https://${process.env.B_KINTONE_DOMAIN}/k/v1/records.json`,
+      {
+        method: 'PUT',
+        headers: {
+          'X-Cybozu-API-Token': process.env.B_KINTONE_API_TOKEN,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          app: process.env.B_KINTONE_APP_ID,
+          updateKey: { field: '契約NO', value: record['契約NO']?.value },
+          record: bRecord
+        })
+      }
+    );
+
+    const result = await response.json();
+    if (!response.ok) {
+      return res.status(500).json(result);
     }
 
-    res.json({ success: true });
-
+    res.json({ message: '✅ Data sent successfully', result });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: '通信エラー' });
+    console.error('Error:', err);
+    res.status(500).json({ message: err.message });
   }
 });
 
-const port = process.env.PORT || 3000;
-app.listen(port, () => console.log(`Server running on port ${port}`));
+app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
